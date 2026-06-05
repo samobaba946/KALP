@@ -1,0 +1,356 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+<title>İnci 💗</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Dancing+Script:wght@600;700&display=swap" rel="stylesheet" />
+<style>
+  *{ margin:0; padding:0; box-sizing:border-box; }
+  html,body{ height:100%; overflow:hidden; background:#050007; }
+  body{
+    position:relative;
+    background:radial-gradient(120% 120% at 50% 42%, #18021f 0%, #0c0115 45%, #050007 100%);
+    cursor:pointer; -webkit-tap-highlight-color:transparent;
+  }
+  #scene{ position:fixed; inset:0; display:block; }
+  #vignette{
+    position:fixed; inset:0; pointer-events:none;
+    box-shadow: inset 0 0 240px 80px rgba(2,0,6,0.92);
+    background:radial-gradient(140% 100% at 50% 50%, transparent 50%, rgba(3,0,9,0.62) 100%);
+  }
+  #name{
+    position:fixed; left:50%; top:49%;
+    transform:translate(-50%,-50%); text-align:center;
+    pointer-events:none; user-select:none; line-height:1; filter:saturate(1.1);
+  }
+  #name .line{
+    display:inline-block;
+    font-family:'Dancing Script','Brush Script MT',cursive; font-weight:700;
+    font-size:clamp(2.4rem, 10vw, 7rem); color:#fff; white-space:nowrap;
+  }
+  #name .ltr{
+    display:inline-block; opacity:0; transform:translateY(0.16em);
+    transition:opacity .5s ease, transform .5s cubic-bezier(.16,1,.3,1);
+    text-shadow:0 0 6px rgba(255,255,255,0.95),0 0 18px rgba(255,120,180,0.9),
+      0 0 40px rgba(255,61,127,0.8),0 0 90px rgba(255,61,127,0.5);
+  }
+  #name .ltr.vis{ opacity:1; transform:none; }
+  #name .caret{
+    display:inline-block; width:0.06em; height:0.92em; margin-left:0.05em;
+    vertical-align:-0.1em; background:#fff;
+    box-shadow:0 0 12px #ff3d7f,0 0 24px #ff3d7f; opacity:0;
+  }
+  #name.show .caret{ opacity:1; animation:blink 1.05s steps(1,end) infinite; }
+  @keyframes blink{ 50%{ opacity:0; } }
+  #hint{
+    position:fixed; left:50%; bottom:26px; transform:translateX(-50%);
+    font-family:'Dancing Script',cursive; font-size:1.1rem; letter-spacing:0.06em;
+    color:rgba(255,255,255,0.4); pointer-events:none; user-select:none;
+    transition:opacity 1.4s ease;
+  }
+  #hint.gone{ opacity:0; }
+</style>
+</head>
+<body>
+  <canvas id="scene"></canvas>
+  <div id="vignette"></div>
+  <div id="name" lang="tr">
+    <span class="line"><span class="ltr">İ</span><span class="ltr">n</span><span class="ltr">c</span><span class="ltr">i</span><span class="caret"></span></span>
+  </div>
+  <div id="hint">dokun veya tıkla</div>
+
+<script>
+(() => {
+  "use strict";
+
+  const cvs=document.getElementById('scene');
+  const ctx=cvs.getContext('2d');
+  const nameEl=document.getElementById('name');
+  const letters=Array.from(nameEl.querySelectorAll('.ltr'));
+  const hintEl=document.getElementById('hint');
+
+  // ---------- config ----------
+  const NUM        = 6500;
+  const SPR        = 6.5;     // base sprite draw size (px)
+  const SIG        = 1.8;     // dust spread (heart-space, tight core)
+  const SIG_OUT    = 3.6;     // wispy outliers
+  const GATHER_MS  = 4800;
+  const HOLD_MS    = 3600;
+  const EXPLODE_MS = 4300;
+  const STATE={ GATHER:0, HOLD:1, EXPLODE:2 };
+
+  let W=0,H=0,DPR=1, cx=0,cy=0, scale=1, Cx=0,Cy=0, heartPx=0;
+  let particles=[], sparks=[], stars=[];
+  let state=STATE.GATHER, stateStart=performance.now(), burstTimer=0, typeTimers=[];
+
+  // ---------- helpers ----------
+  const rand=(a,b)=>a+Math.random()*(b-a);
+  const clamp=(v,a,b)=>v<a?a:v>b?b:v;
+  const lerp=(a,b,t)=>a+(b-a)*t;
+  const easeInOutQuad=t=>t<0.5?2*t*t:1-Math.pow(-2*t+2,2)/2;
+  function gauss(){ let u=0,v=0; while(u===0)u=Math.random(); while(v===0)v=Math.random();
+    return Math.sqrt(-2*Math.log(u))*Math.cos(2*Math.PI*v); }
+
+  function hslToRgb(h,s,l){
+    h=((h%360)+360)%360; h/=360; s/=100; l/=100; let r,g,b;
+    if(s===0){r=g=b=l;}else{
+      const f=(p,q,t)=>{if(t<0)t+=1;if(t>1)t-=1;if(t<1/6)return p+(q-p)*6*t;
+        if(t<1/2)return q;if(t<2/3)return p+(q-p)*(2/3-t)*6;return p;};
+      const q=l<0.5?l*(1+s):l+s-l*s,p=2*l-q;
+      r=f(p,q,h+1/3);g=f(p,q,h);b=f(p,q,h-1/3);
+    }
+    return [Math.round(r*255),Math.round(g*255),Math.round(b*255)];
+  }
+  const FESTIVE=[[255,61,127],[255,210,63],[78,219,255],[181,107,255],[255,255,255],[255,107,74],[120,255,170]];
+
+  // ---------- glow sprite cache ----------
+  const spriteCache=new Map();
+  const SPX=24;
+  function spriteFor(rgb){
+    const key=(rgb[0]>>3)+'_'+(rgb[1]>>3)+'_'+(rgb[2]>>3);
+    let s=spriteCache.get(key); if(s) return s;
+    const c=document.createElement('canvas'); c.width=c.height=SPX;
+    const g=c.getContext('2d'), r=SPX/2, col=rgb[0]+','+rgb[1]+','+rgb[2];
+    const grd=g.createRadialGradient(r,r,0,r,r,r);
+    grd.addColorStop(0,`rgba(${col},1)`);
+    grd.addColorStop(0.28,`rgba(${col},0.82)`);
+    grd.addColorStop(0.55,`rgba(${col},0.32)`);
+    grd.addColorStop(1,`rgba(${col},0)`);
+    g.fillStyle=grd; g.beginPath(); g.arc(r,r,r,0,Math.PI*2); g.fill();
+    spriteCache.set(key,c); return c;
+  }
+
+  // ---------- heart path (clean cubic beziers, 100x100, point at bottom) ----------
+  const SEGS=[
+    [[50,88],[50,88],[8,58],[8,32]],
+    [[8,32],[8,18],[19,10],[30,10]],
+    [[30,10],[39,10],[46,16],[50,24]],
+    [[50,24],[54,16],[61,10],[70,10]],
+    [[70,10],[81,10],[92,18],[92,32]],
+    [[92,32],[92,58],[50,88],[50,88]],
+  ];
+  function cubic(s,t){
+    const mt=1-t, a=mt*mt*mt, b=3*mt*mt*t, c=3*mt*t*t, d=t*t*t;
+    return { x:a*s[0][0]+b*s[1][0]+c*s[2][0]+d*s[3][0],
+             y:a*s[0][1]+b*s[1][1]+c*s[2][1]+d*s[3][1] };
+  }
+  let segLen=[], totalLen=0, bMinX=1e9,bMaxX=-1e9,bMinY=1e9,bMaxY=-1e9;
+  (function measure(){
+    for(const s of SEGS){
+      let L=0,prev=cubic(s,0);
+      for(let i=1;i<=60;i++){ const p=cubic(s,i/60);
+        L+=Math.hypot(p.x-prev.x,p.y-prev.y); prev=p;
+        if(p.x<bMinX)bMinX=p.x; if(p.x>bMaxX)bMaxX=p.x;
+        if(p.y<bMinY)bMinY=p.y; if(p.y>bMaxY)bMaxY=p.y; }
+      segLen.push(L); totalLen+=L;
+    }
+    Cx=(bMinX+bMaxX)/2; Cy=(bMinY+bMaxY)/2;
+  })();
+  function mathToScreen(mx,my){ return { x:cx+(mx-Cx)*scale, y:cy+(my-Cy)*scale }; }
+
+  // ---------- build dust (gaussian spread + depth + colour gradient) ----------
+  function buildParticles(){
+    particles=[];
+    for(let si=0; si<SEGS.length; si++){
+      const cnt=Math.max(1, Math.round(NUM*segLen[si]/totalLen));
+      for(let j=0;j<cnt;j++){
+        const o=cubic(SEGS[si], j/cnt);
+        const vt=clamp((o.y-bMinY)/(bMaxY-bMinY),0,1);   // 0 top .. 1 bottom
+        const sig=Math.random()<0.12?SIG_OUT:SIG;
+        const omx=o.x+gauss()*sig;
+        const omy=o.y+gauss()*sig;
+        const z=gauss(), zf=1/(1+Math.exp(-z));          // depth 0..1 (front=1)
+
+        let rgb, sparkle=Math.random()<0.07;
+        if(sparkle){ rgb=[255,236,246]; }
+        else{
+          const hue=346-14*vt+rand(-4,4);                // pink (top) -> red/magenta (bottom)
+          const li=clamp(0.50+0.16*(1-vt)+0.16*zf+rand(-0.03,0.03),0.30,0.90);
+          rgb=hslToRgb(hue,92,li*100);
+        }
+        let size=0.4+0.9*zf; if(sparkle) size*=1.3;
+        const bri=0.55+0.45*zf;
+
+        particles.push({
+          omx,omy, tx:0,ty:0, x:0,y:0, sx:0,sy:0, vx:0,vy:0,
+          baseColor:rgb, baseSprite:spriteFor(rgb), color:rgb, sprite:spriteFor(rgb),
+          size, bri, alpha:0,
+          gStart:rand(0,1500), gDur:rand(1500,3100),
+          tw:Math.random()*Math.PI*2, tws:rand(0.004,0.012)
+        });
+      }
+    }
+  }
+  function projectTargets(){ for(const p of particles){ const s=mathToScreen(p.omx,p.omy); p.tx=s.x; p.ty=s.y; } }
+  function fromCenter(p){
+    p.sx=cx+rand(-2,2); p.sy=cy+rand(-2,2);
+    p.x=p.sx; p.y=p.sy; p.alpha=0;
+    p.color=p.baseColor; p.sprite=p.baseSprite;
+  }
+
+  // ---------- stars ----------
+  function buildStars(){
+    stars=[]; const n=Math.round((W*H)/15000);
+    for(let i=0;i<n;i++) stars.push({x:Math.random()*W,y:Math.random()*H,r:rand(0.4,1.3),
+      base:rand(0.1,0.45),ph:Math.random()*Math.PI*2,sp:rand(0.5,2.2)});
+  }
+
+  function drawDot(x,y,sprite,alpha,sz){
+    if(alpha<=0.01) return;
+    const d=sz*SPR;
+    ctx.globalAlpha=alpha>1?1:alpha;
+    ctx.drawImage(sprite, x-d*0.5, y-d*0.5, d, d);
+  }
+
+  // ---------- fireworks ----------
+  function spawnBurst(x,y){
+    const color=FESTIVE[(Math.random()*FESTIVE.length)|0], sp=spriteFor(color), wsp=spriteFor([255,255,255]);
+    const count=46+(Math.random()*26|0), spd=rand(2.4,5.2)*(Math.min(W,H)/820);
+    for(let i=0;i<count;i++){
+      const a=(i/count)*Math.PI*2+Math.random()*0.25, v=spd*rand(0.55,1.15), white=Math.random()<0.18;
+      sparks.push({x,y,vx:Math.cos(a)*v,vy:Math.sin(a)*v,
+        sprite: white?wsp:sp, size:rand(0.5,1.1), life:1, decay:rand(0.012,0.024),
+        tw:Math.random()*Math.PI*2, tws:rand(0.02,0.06)});
+    }
+  }
+
+  // ---------- name typing ----------
+  function clearType(){ typeTimers.forEach(clearTimeout); typeTimers=[]; }
+  function typeName(){
+    clearType(); nameEl.classList.add('show');
+    letters.forEach((el,i)=> typeTimers.push(setTimeout(()=>el.classList.add('vis'),200*i+160)));
+  }
+  function hideName(){
+    clearType(); nameEl.classList.remove('show');
+    letters.forEach(el=>el.classList.remove('vis'));
+  }
+
+  // ---------- transitions ----------
+  function enterGather(now){
+    state=STATE.GATHER; stateStart=now; projectTargets();
+    for(const p of particles) fromCenter(p);
+    sparks.length=0; hideName();
+  }
+  function enterHold(now){
+    state=STATE.HOLD; stateStart=now;
+    for(const p of particles){ p.x=p.tx; p.y=p.ty; p.alpha=1; p.color=p.baseColor; p.sprite=p.baseSprite; }
+    typeName();
+  }
+  function enterExplode(now){
+    state=STATE.EXPLODE; stateStart=now; burstTimer=0; hideName();
+    const k=Math.min(W,H)/760;
+    for(const p of particles){
+      const dx=p.x-cx, dy=p.y-cy, ang=Math.atan2(dy,dx)+rand(-0.18,0.18), spd=rand(3.0,9.5)*k;
+      p.vx=Math.cos(ang)*spd; p.vy=Math.sin(ang)*spd-rand(0,1.2)*k;
+      if(Math.random()<0.5){ p.color=FESTIVE[(Math.random()*FESTIVE.length)|0]; p.sprite=spriteFor(p.color); }
+      p.alpha=1;
+    }
+  }
+
+  // ---------- update ----------
+  function heartbeat(ms){
+    const p=(ms%1150)/1150;
+    return Math.exp(-Math.pow((p-0.12)*13,2))+Math.exp(-Math.pow((p-0.30)*13,2))*0.65;
+  }
+  function update(now){
+    const el=now-stateStart;
+    if(state===STATE.GATHER){
+      if(el>=GATHER_MS){ enterHold(now); }
+      else for(const p of particles){
+        const local=clamp((el-p.gStart)/p.gDur,0,1), e=easeInOutQuad(local);
+        p.x=lerp(p.sx,p.tx,e); p.y=lerp(p.sy,p.ty,e); p.alpha=e;
+      }
+    } else if(state===STATE.HOLD){
+      if(el>=HOLD_MS){ enterExplode(now); }
+      else{
+        const pulse=1+0.045*heartbeat(el);
+        for(const p of particles){
+          p.x=cx+(p.tx-cx)*pulse+Math.sin(now*p.tws+p.tw)*0.7;
+          p.y=cy+(p.ty-cy)*pulse+Math.cos(now*p.tws+p.tw)*0.7;
+          p.alpha=1;
+        }
+      }
+    } else {
+      if(el>=EXPLODE_MS){ enterGather(now); return; }
+      const t=el/EXPLODE_MS, k=Math.min(W,H)/760, GRAV=0.055*k, DRAG=0.986;
+      for(const p of particles){
+        p.vy+=GRAV; p.vx*=DRAG; p.vy*=DRAG; p.x+=p.vx; p.y+=p.vy;
+        p.alpha=clamp(1-t*1.08,0,1);
+      }
+      burstTimer-=16;
+      if(el<EXPLODE_MS*0.62 && burstTimer<=0){ spawnBurst(rand(0.18,0.82)*W,rand(0.16,0.6)*H); burstTimer=rand(140,320); }
+    }
+    const G2=0.045*(Math.min(W,H)/760);
+    for(let i=sparks.length-1;i>=0;i--){
+      const s=sparks[i]; s.vy+=G2; s.vx*=0.985; s.vy*=0.985; s.x+=s.vx; s.y+=s.vy; s.life-=s.decay;
+      if(s.life<=0) sparks.splice(i,1);
+    }
+  }
+
+  // ---------- render ----------
+  function render(now){
+    const fade=state===STATE.EXPLODE?0.14:state===STATE.HOLD?0.30:0.22;
+    ctx.globalCompositeOperation='source-over'; ctx.globalAlpha=1;
+    ctx.fillStyle=`rgba(5,0,7,${fade})`; ctx.fillRect(0,0,W,H);
+
+    ctx.globalCompositeOperation='lighter';
+    for(const st of stars){
+      ctx.globalAlpha=st.base*(0.55+0.45*Math.sin(now*0.001*st.sp+st.ph));
+      ctx.fillStyle='#cfe3ff'; ctx.beginPath(); ctx.arc(st.x,st.y,st.r,0,Math.PI*2); ctx.fill();
+    }
+    if(state!==STATE.EXPLODE){
+      const beat=state===STATE.HOLD?heartbeat(now-stateStart):0, ha=0.08+0.05*beat;
+      const hg=ctx.createRadialGradient(cx,cy,0,cx,cy,heartPx*0.85);
+      hg.addColorStop(0,`rgba(255,61,127,${ha})`);
+      hg.addColorStop(0.5,`rgba(255,61,127,${ha*0.35})`);
+      hg.addColorStop(1,'rgba(255,61,127,0)');
+      ctx.globalAlpha=1; ctx.fillStyle=hg; ctx.fillRect(0,0,W,H);
+    }
+    for(const p of particles){
+      drawDot(p.x,p.y,p.sprite,p.alpha*p.bri*(0.8+0.2*Math.sin(now*p.tws+p.tw)),p.size);
+    }
+    for(const s of sparks){
+      drawDot(s.x,s.y,s.sprite,s.life*(0.7+0.3*Math.sin(now*s.tws+s.tw)),s.size);
+    }
+    ctx.globalAlpha=1;
+  }
+
+  function frame(now){ update(now); render(now); requestAnimationFrame(frame); }
+
+  function resize(){
+    DPR=Math.min(window.devicePixelRatio||1,2);
+    W=window.innerWidth; H=window.innerHeight;
+    cvs.width=Math.round(W*DPR); cvs.height=Math.round(H*DPR);
+    cvs.style.width=W+'px'; cvs.style.height=H+'px';
+    ctx.setTransform(DPR,0,0,DPR,0,0);
+    cx=W/2; cy=H*0.52;
+    const wMath=bMaxX-bMinX, hMath=bMaxY-bMinY;
+    scale=Math.min((W*0.84)/wMath,(H*0.66)/hMath);
+    heartPx=hMath*scale;
+    projectTargets(); buildStars();
+  }
+
+  function onTap(){
+    const now=performance.now();
+    if(state===STATE.GATHER||state===STATE.HOLD) enterExplode(now); else enterGather(now);
+    hintEl.classList.add('gone');
+  }
+  window.addEventListener('pointerdown', onTap);
+
+  function start(){
+    resize(); buildParticles(); enterGather(performance.now());
+    requestAnimationFrame(frame); setTimeout(()=>hintEl.classList.add('gone'),6000);
+  }
+  window.addEventListener('resize', resize);
+
+  if(document.fonts && document.fonts.ready){
+    document.fonts.ready.then(start);
+    setTimeout(()=>{ if(!particles.length) start(); },1200);
+  } else start();
+})();
+</script>
+</body>
+</html>
